@@ -1,0 +1,180 @@
+// <video> with no device: the platform's side is stand-ins that record their calls, and the
+// test sends the events a platform would. Each check that fails exits with 1.
+import <io>;
+import <string>;
+import <ui>;
+import <video>;
+
+int next_id = 7;
+int opens;
+int closes;
+int last_closed;
+String opened;
+int open_autoplay;
+int open_loop;
+float open_volume;
+int sets;
+int set_loop;
+float set_rate;
+int plays;
+int pauses;
+double seeked = -1.0;
+int frames_calls;
+
+int video_native_open(string source, int autoplay, int loop, int muted, float volume, float rate) {
+    opens++;
+    String_clear(&opened);
+    String_append(&opened, source);
+    open_autoplay = autoplay;
+    open_loop = loop;
+    open_volume = volume;
+    return next_id++;
+}
+
+void video_native_close(int id) { closes++; last_closed = id; }
+
+void video_native_play(int id) { plays++; }
+
+void video_native_pause(int id) { pauses++; }
+
+void video_native_seek(int id, double seconds) { seeked = seconds; }
+
+void video_native_set(int id, int loop, int muted, float volume, float rate) {
+    sets++;
+    set_loop = loop;
+    set_rate = rate;
+}
+
+double video_native_position(int id) { return 2.5; }
+
+void video_native_frames(int id, int on, int max_width, int max_height) { frames_calls++; }
+
+int video_native_frame_acquire(int id, *int64 info) { return 0; }
+
+void video_native_frame_release(int id) {}
+
+void check(bool ok, string what) {
+    if (!ok) {
+        printf("FAIL %s\n", what);
+        exit(1);
+    }
+}
+
+*Signal<int> mounted;
+*Signal<int> which;
+*Signal<int> looping;
+*VideoPlayer seen;
+int renders;
+int last_status = -1;
+String shown;
+
+void Screen() {
+    Scope("Screen", Key{}) {
+        string source = which.get() == 0 ? "clips/intro.mp4" : "https://example.com/live/stream.m3u8";
+        *VideoPlayer player = use_video(source, VideoOptions{autoplay: true, loop: looping.get() == 1, volume: 0.5});
+        seen = player;
+        VideoView(Style{width: 320, height: 180}, player, VideoCover);
+        Scope("Info", Key{}) {
+            renders++;
+            last_status = player.status();
+            String_clear(&shown);
+            String_appendf(&shown, "%d %.3f %dx%d %s", player.status(), player.duration(), player.width(),
+                           player.height(), player.error());
+        }
+    }
+}
+
+void sources() {
+    string s = video_resolve("https://example.com/a.mp4");
+    check(strcmp(s, "https://example.com/a.mp4") == 0, "a URL stays");
+    free(s);
+    s = video_resolve("/var/mobile/clip.mov");
+    check(strcmp(s, "/var/mobile/clip.mov") == 0, "a path stays");
+    free(s);
+    s = video_resolve("blob:https://x/1");
+    check(strcmp(s, "blob:https://x/1") == 0, "a blob URL stays");
+    free(s);
+    // Outside a host there is no asset lookup: the name is a URL relative to the page.
+    s = video_resolve("clips/intro.mp4");
+    check(strcmp(s, "clips/intro.mp4") == 0, "an asset name without a host");
+    free(s);
+}
+
+void player() {
+    Ui runtime;
+    ui_init(&runtime, void(*uint8 data, int len) { ui_complete(ui.sequence); });
+    mounted = signal_new<int>(1);
+    which = signal_new<int>(0);
+    looping = signal_new<int>(0);
+    ui_mount() {
+        if (mounted.get() > 0) { Screen(); }
+    }
+    ui_frame();
+    check(opens == 1 && strcmp(opened.data, "clips/intro.mp4") == 0, "mounting opens the source");
+    check(open_autoplay == 1 && open_loop == 0 && open_volume == 0.5, "the options go with the open");
+    check(seen.id == 7 && last_status == VideoLoading, "loading at first");
+
+    ui_event_native("video", "7 ready 12500 1080 1920");
+    ui_frame();
+    check(last_status == VideoReady, "ready");
+    check(strcmp(shown.data, "1 12.500 1080x1920 ") == 0, "duration and size");
+    int before = renders;
+    ui_event_native("video", "8 playing");
+    ui_event_native("video", "70 playing");
+    ui_event_native("video", "7 nonsense");
+    ui_frame();
+    check(renders == before && last_status == VideoReady, "other players' events and unknown words are ignored");
+    ui_event_native("video", "7 playing");
+    ui_frame();
+    check(last_status == VideoPlaying, "playing");
+    ui_event_native("video", "7 paused");
+    ui_frame();
+    check(last_status == VideoPaused, "paused");
+    ui_event_native("video", "7 ended");
+    ui_frame();
+    check(last_status == VideoEnded, "ended");
+
+    seen.play();
+    seen.pause();
+    seen.seek(-3.0);
+    check(plays == 1 && pauses == 1 && seeked == 0.0, "play, pause, seek (not before the start)");
+    seen.seek(4.25);
+    check(seeked == 4.25 && seen.position() == 2.5, "seek and position");
+
+    looping.set(1);
+    ui_frame();
+    check(sets == 1 && set_loop == 1 && opens == 1, "new options are applied, not reopened");
+    ui_frame();
+    check(sets == 1, "the same options are not sent again");
+
+    which.set(1);
+    ui_frame();
+    check(opens == 2 && closes == 1 && last_closed == 7, "a new source closes the old player");
+    check(strcmp(opened.data, "https://example.com/live/stream.m3u8") == 0 && seen.id == 8, "and opens the new one");
+    check(last_status == VideoLoading, "loading again");
+    ui_event_native("video", "7 playing");
+    ui_frame();
+    check(last_status == VideoLoading, "the old player's events are ignored");
+    ui_event_native("video", "8 ready 0 1280 720");
+    ui_frame();
+    check(strcmp(shown.data, "1 0.000 1280x720 ") == 0, "a live stream has no duration");
+    ui_event_native("video", "8 failed The server is not reachable");
+    ui_frame();
+    check(last_status == VideoFailed && strcmp(shown.data, "5 0.000 1280x720 The server is not reachable") == 0,
+          "failed, with the platform's words");
+
+    mounted.set(0);
+    ui_frame();
+    check(closes == 2 && last_closed == 8, "unmounting closes the player");
+    ui_shutdown();
+    mounted.free();
+    which.free();
+    looping.free();
+}
+
+int main() {
+    sources();
+    player();
+    printf("PASS video\n");
+    return 0;
+}
