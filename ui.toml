@@ -1,0 +1,7 @@
+# What an app that depends on this package gets: AVFoundation on iOS, and the network
+# permission on Android for videos streamed over HTTP(S).
+[ios]
+frameworks = ["AVFoundation", "CoreMedia", "CoreVideo", "QuartzCore"]
+
+[android]
+permissions = ["android.permission.INTERNET"]
