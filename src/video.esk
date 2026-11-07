@@ -1,0 +1,530 @@
+// <video>: video playback for apps on eskiu-lang/ui. use_video opens a video file or stream
+// in the platform's player (AVPlayer on iOS, MediaPlayer on Android, an HTML <video> on the
+// web and the desktop), which plays its sound too; VideoView shows it, and use_video_frames
+// hands its decoded pictures to Eskiu, as YUV planes (RGBA on the web) laid out like
+// ui-camera's CameraFrame, so <gpu/yuv> draws either.
+import <string>;
+import <ui>;
+
+// What a player is doing: opening its source, ready to play (paused at the start),
+// playing, paused, at the end (with loop off), or failed (VideoPlayer_error says why).
+enum VideoStatus { VideoLoading, VideoReady, VideoPlaying, VideoPaused, VideoEnded, VideoFailed }
+
+// How use_video starts and plays: start playing once ready (autoplay), start again at the
+// end (loop), no sound (muted), the volume from 0 to 1 and the speed (rate, 1 is normal).
+// A change from one render to the next is applied to the playing video.
+struct VideoOptions {
+    bool autoplay;
+    bool loop;
+    bool muted;
+    float volume = 1.0;
+    float rate = 1.0;
+}
+
+// A video in the platform's player, kept by use_video for as long as its scope is mounted.
+// Read it with the VideoPlayer_ functions: status, duration and size subscribe the reader,
+// so a component that shows them renders again when they change. `id` is the platform's
+// player (0 for none).
+struct VideoPlayer {
+    int id;
+    int status;
+    int64 duration_ms;
+    int width;
+    int height;
+    String error;
+    *Signal<int> changes;
+    int frame_users;
+    int frame_width;
+    int frame_height;
+}
+
+// The platform's side (native/ios, native/android, native/web). video_native_open starts
+// opening `source` (a URL or a file path) and returns the player's id, above 0. Events come
+// back on the "video" channel as "ID ready DURATION_MS WIDTH HEIGHT" (the size upright,
+// DURATION_MS 0 for a live stream), "ID playing", "ID paused", "ID ended" and
+// "ID failed MESSAGE".
+extern int video_native_open(string source, int autoplay, int loop, int muted, float volume, float rate);
+extern void video_native_close(int id);
+extern void video_native_play(int id);
+extern void video_native_pause(int id);
+extern void video_native_seek(int id, double seconds);
+extern void video_native_set(int id, int loop, int muted, float volume, float rate);
+extern double video_native_position(int id);
+
+// Where `source` is for the platform: a URL (it has "://", or is a blob: or data: URL) or an
+// absolute path as it is; any other name is a file of the app's assets/, as a path on iOS
+// and Android (ui_asset_path), and by its name, a URL relative to the page, on the web and
+// the desktop. The result is from malloc; the caller frees it.
+string video_resolve(string source) {
+    if (source == null) { return null; }
+    if (strstr(source, "://") != null || strncmp(source, "blob:", 5) == 0 || strncmp(source, "data:", 5) == 0 ||
+        source[0] == '/') {
+        return ui_copy(source);
+    }
+    string path = ui_asset_path(source);
+    if (path != null) { return path; }
+    return ui_copy(source);
+}
+
+// The player's status (a VideoStatus); subscribes the reader.
+int VideoPlayer_status(*VideoPlayer self) {
+    self.changes.get();
+    return self.status;
+}
+
+// The length in seconds, 0 until the video is ready and for a live stream; subscribes the
+// reader.
+double VideoPlayer_duration(*VideoPlayer self) {
+    self.changes.get();
+    return (double)self.duration_ms / 1000.0;
+}
+
+// The picture's width in pixels as it is shown (turned upright), 0 until ready; subscribes
+// the reader.
+int VideoPlayer_width(*VideoPlayer self) {
+    self.changes.get();
+    return self.width;
+}
+
+// The picture's height in pixels as it is shown, 0 until ready; subscribes the reader.
+int VideoPlayer_height(*VideoPlayer self) {
+    self.changes.get();
+    return self.height;
+}
+
+// Why the player failed (the platform's words), or "" when it did not; subscribes the reader.
+string VideoPlayer_error(*VideoPlayer self) {
+    self.changes.get();
+    return self.error.data == null ? "" : self.error.data;
+}
+
+// Where playback is now, in seconds from the start, asked from the platform at the call
+// (not reactive: a progress bar reads it from a use_interval or use_frame handler).
+double VideoPlayer_position(*VideoPlayer self) {
+    if (self.id == 0) { return 0.0; }
+    return video_native_position(self.id);
+}
+
+// Plays from where it is; before the video is ready, once it is.
+void VideoPlayer_play(*VideoPlayer self) { if (self.id != 0) { video_native_play(self.id); } }
+
+// Pauses.
+void VideoPlayer_pause(*VideoPlayer self) { if (self.id != 0) { video_native_pause(self.id); } }
+
+// Moves to `seconds` from the start (to the exact frame where the platform can).
+void VideoPlayer_seek(*VideoPlayer self, double seconds) {
+    if (self.id != 0) { video_native_seek(self.id, seconds < 0.0 ? 0.0 : seconds); }
+}
+
+// A message on the "video" channel applied to `player` when it is about that player's id.
+// Returns whether it was.
+bool video_apply(*VideoPlayer player, string payload) {
+    if (payload == null || player.id == 0) { return false; }
+    int at = 0;
+    int id = 0;
+    while (payload[at] >= '0' && payload[at] <= '9') { id = id * 10 + (payload[at] - '0'); at++; }
+    if (at == 0 || id != player.id || payload[at] != ' ') { return false; }
+    string word = &payload[at + 1];
+    if (strncmp(word, "ready ", 6) == 0) {
+        int64[3] values;
+        int k = 6;
+        for (i in 0..3) {
+            int64 v = 0;
+            while (word[k] >= '0' && word[k] <= '9') { v = v * 10 + (word[k] - '0'); k++; }
+            values[i] = v;
+            if (word[k] == ' ') { k++; }
+        }
+        player.duration_ms = values[0];
+        player.width = (int)values[1];
+        player.height = (int)values[2];
+        if (player.status == VideoLoading) { player.status = VideoReady; }
+    } else if (strcmp(word, "playing") == 0) {
+        player.status = VideoPlaying;
+    } else if (strcmp(word, "paused") == 0) {
+        player.status = VideoPaused;
+    } else if (strcmp(word, "ended") == 0) {
+        player.status = VideoEnded;
+    } else if (strncmp(word, "failed", 6) == 0) {
+        player.status = VideoFailed;
+        String_clear(&player.error);
+        String_append(&player.error, word[6] == ' ' ? &word[7] : "failed");
+    } else {
+        return false;
+    }
+    player.changes.set(player.changes.value + 1);
+    return true;
+}
+
+// The latest render's source and options, and the player, kept in use_video's slot.
+struct VideoHeld {
+    VideoPlayer player;
+    String source;
+    VideoOptions options;
+}
+
+// Opens `source` with `options` into `player`, closing what it had.
+void video_open_into(*VideoPlayer player, string source, VideoOptions options) {
+    if (player.id != 0) { video_native_close(player.id); }
+    player.id = 0;
+    player.status = VideoLoading;
+    player.duration_ms = 0;
+    player.width = 0;
+    player.height = 0;
+    String_clear(&player.error);
+    string where = video_resolve(source);
+    if (where != null) {
+        player.id = video_native_open(where, options.autoplay ? 1 : 0, options.loop ? 1 : 0, options.muted ? 1 : 0,
+                                      options.volume, options.rate);
+        free(where);
+    }
+    if (player.id <= 0) {
+        player.id = 0;
+        player.status = VideoFailed;
+        String_append(&player.error, "no player");
+    }
+    if (player.id != 0 && player.frame_users > 0) {
+        video_native_frames(player.id, 1, player.frame_width, player.frame_height);
+    }
+    player.changes.set(player.changes.value + 1);
+}
+
+// The video at `source` in the platform's player, open while the scope is mounted: a URL
+// (http, https, a file:// URL, a blob: URL on the web), an absolute file path, or the name of
+// a file in the app's assets/. The platform plays its sound. A new source opens it in place
+// of the old one; new options are applied to the playing video. The player is closed when
+// the scope unmounts.
+*VideoPlayer use_video(string source, VideoOptions options) {
+    static int tag;
+    *Slot slot = ui_slot(10, &tag);
+    *VideoHeld held = (*VideoHeld)slot.data;
+    if (held == null) {
+        held = alloc<VideoHeld>(1);
+        held.player.changes = signal_new<int>(0);
+        slot.data = held;
+        slot.dispose = void() {
+            if (held.player.id != 0) { video_native_close(held.player.id); }
+            String_free(&held.player.error);
+            String_free(&held.source);
+            held.player.changes.free();
+            free(held);
+        };
+    }
+    string now = source == null ? "" : source;
+    if (held.source.data == null || strcmp(held.source.data, now) != 0) {
+        String_clear(&held.source);
+        String_append(&held.source, now);
+        held.options = options;
+        video_open_into(&held.player, now, options);
+    } else if (held.options.loop != options.loop || held.options.muted != options.muted ||
+               held.options.volume != options.volume || held.options.rate != options.rate) {
+        held.options = options;
+        if (held.player.id != 0) {
+            video_native_set(held.player.id, options.loop ? 1 : 0, options.muted ? 1 : 0, options.volume, options.rate);
+        }
+    } else {
+        held.options = options;
+    }
+    use_native_event("video", void(string payload) { video_apply(&held.player, payload); });
+    return &held.player;
+}
+
+// How VideoView fits the picture in its box: the whole picture at its aspect ratio
+// (VideoContain, bars where it does not fill), filling the box and cropping
+// (VideoCover), or stretched to the box (VideoStretch).
+enum VideoFit { VideoContain, VideoCover, VideoStretch }
+
+// The player's picture, shown by the platform in the box the layout gives it (Eskiu does not
+// touch the frames). One VideoView per player. On Android a player sends its picture to one
+// place: while use_video_frames is on for it, the frames get the picture and the view stays
+// black.
+void VideoView(Style style, *VideoPlayer player, VideoFit fit) {
+    String id;
+    defer String_free(&id);
+    String_format(&id, "%d", player.id);
+    ui_native_prop("player", id.data);
+    ui_native_prop("fit", fit == VideoCover ? "cover" : (fit == VideoStretch ? "stretch" : "contain"));
+    NativeView(style, "video", void(string name, string payload) {});
+}
+
+// Decoded frames: the native side keeps the newest picture of a player whose frames are on,
+// posts its id on the "video_frame" channel once one is waiting, and lends it to Eskiu by
+// pointer for the length of the handler's call, as ui-camera does with the camera.
+
+// How a frame's pixels are laid out; the values of ui-camera's CameraFormat and
+// <gpu/yuv>'s GpuYuvFormat. NV12: a Y plane, then one plane of interleaved U and V (U first).
+// NV21: the same with V first. I420: Y, U and V planes, chroma a quarter of the size.
+// YUV420: Y, U and V planes whose chroma samples are `pixel_stride` bytes apart. RGBA: one
+// plane of 4 bytes a pixel (the web).
+enum VideoFormat { VideoNV12, VideoNV21, VideoI420, VideoYUV420, VideoRGBA }
+
+// The matrix a frame's YUV is encoded with: BT.601 (standard definition) or BT.709 (HD).
+enum VideoMatrix { VideoBT601, VideoBT709 }
+
+// One plane of a frame: `data` (borrowed for the handler's call), the bytes from one row to
+// the next, from one sample to the next in a row (2 in NV12 and NV21's chroma plane), and the
+// bytes readable from `data`.
+struct VideoPlane { *uint8 data; int row_stride; int pixel_stride; int64 size; }
+
+// A decoded frame, laid out like ui-camera's CameraFrame and <gpu/yuv>'s GpuYuvImage (cast
+// a *VideoFrame to a *GpuYuvImage to upload it). `width` and `height` are in pixels as
+// decoded; `plane_count` planes are set, as `format` says. `rotation` (0, 90, 180 or 270)
+// is how far to turn it clockwise to be upright (a phone's portrait video is stored
+// landscape); `timestamp_ns` is the frame's time in the video; `front` is always false
+// (it keeps the shared layout); `matrix` and `full_range` say how its YUV maps to RGB.
+struct VideoFrame {
+    int width;
+    int height;
+    int format;
+    int plane_count;
+    VideoPlane[3] planes;
+    int rotation;
+    int64 timestamp_ns;
+    bool front;
+    int matrix;
+    bool full_range;
+}
+
+// What use_video_frames asks for: at most this size (0 for the decoded size), kept to the
+// picture's aspect ratio. iOS and the web scale down to it; Android gives the decoded size.
+struct VideoFrameOptions {
+    int max_width;
+    int max_height;
+}
+
+// The platform's side of frames. video_native_frames turns a player's frames on (`on` 1,
+// with the size) or off. video_native_frame_acquire lends the player's latest frame: it
+// fills VIDEO_FRAME_INFO int64 values (video_frame_read's layout) and returns 1, or 0 when
+// there is none; video_native_frame_release ends the loan.
+extern void video_native_frames(int id, int on, int max_width, int max_height);
+extern int video_native_frame_acquire(int id, *int64 info);
+extern void video_native_frame_release(int id);
+
+// How many int64 values video_native_frame_acquire fills: width, height, format,
+// plane_count, rotation, front, matrix, full_range, timestamp_ns, then for each of 3 planes
+// its data pointer, row_stride, pixel_stride and size.
+const int VIDEO_FRAME_INFO = 24;
+
+// The values video_native_frame_acquire filled, checked, as a frame; false when they do not
+// describe one (unknown format, a missing plane, strides or sizes that do not cover the
+// pixels), so a handler never reads outside a buffer.
+bool video_frame_read(*int64 info, *VideoFrame out) {
+    *out = VideoFrame{};
+    int64 width = info[0];
+    int64 height = info[1];
+    int64 format = info[2];
+    if (width <= 0 || height <= 0 || width > 16384 || height > 16384) { return false; }
+    if (format < VideoNV12 || format > VideoRGBA) { return false; }
+    out.width = (int)width;
+    out.height = (int)height;
+    out.format = (int)format;
+    out.plane_count = (int)info[3];
+    int64 rotation = info[4];
+    if (rotation != 0 && rotation != 90 && rotation != 180 && rotation != 270) { return false; }
+    out.rotation = (int)rotation;
+    out.front = info[5] != 0;
+    out.matrix = info[6] == VideoBT709 ? VideoBT709 : VideoBT601;
+    out.full_range = info[7] != 0;
+    out.timestamp_ns = info[8];
+    int want = 3;
+    if (format == VideoNV12 || format == VideoNV21) { want = 2; }
+    if (format == VideoRGBA) { want = 1; }
+    if (out.plane_count != want) { return false; }
+    for (i in 0..want) {
+        *VideoPlane plane = &out.planes[i];
+        plane.data = (*uint8)info[9 + i * 4];
+        int64 row_stride = info[10 + i * 4];
+        int64 pixel_stride = info[11 + i * 4];
+        plane.size = info[12 + i * 4];
+        if (plane.data == null || row_stride <= 0 || row_stride > 1 << 20) { return false; }
+        if (pixel_stride <= 0 || pixel_stride > 8) { return false; }
+        plane.row_stride = (int)row_stride;
+        plane.pixel_stride = (int)pixel_stride;
+        int rows = out.height;
+        int samples = out.width;
+        if (i > 0) {
+            rows = (out.height + 1) / 2;
+            samples = (out.width + 1) / 2;
+        }
+        // The bytes a row's last sample takes: an interleaved chroma pair's two, or an RGBA
+        // pixel's four.
+        int tail = 1;
+        if (want == 2 && i == 1) { tail = 2; }
+        if (format == VideoRGBA) { tail = 4; }
+        if (plane.pixel_stride < tail) { return false; }
+        int64 row_bytes = (int64)(samples - 1) * plane.pixel_stride + tail;
+        if ((int64)plane.row_stride < row_bytes) { return false; }
+        int64 need = (int64)(rows - 1) * plane.row_stride + row_bytes;
+        if (plane.size < need) { return false; }
+    }
+    return true;
+}
+
+// The latest render's frame handler, its options and the player it reads, kept in the hook's
+// slot.
+struct VideoFrameHandler {
+    fn(*VideoFrame)->void handler;
+    VideoFrameOptions options;
+    *VideoPlayer player;
+}
+
+// Frees a frame handler's closure; use_video_frames calls it when it replaces or drops the
+// handler.
+void video_release_frame_handler(escaping fn(*VideoFrame)->void handler) { free_closure(handler); }
+
+// Borrows the player's latest frame from the platform, hands it to `handler` and gives it
+// back.
+void video_deliver_frame(int id, fn(*VideoFrame)->void handler) {
+    int64[VIDEO_FRAME_INFO] info;
+    if (video_native_frame_acquire(id, &info[0]) == 0) { return; }
+    VideoFrame frame;
+    if (video_frame_read(&info[0], &frame)) { handler(&frame); }
+    video_native_frame_release(id);
+}
+
+// `on_frame` gets `player`'s decoded frames while the scope is mounted, on the UI thread,
+// as the video plays (paused, no new ones come); the frame and its planes are borrowed for
+// the call (convert or copy what you keep). A frame that arrives while it runs replaces the
+// one waiting: a slow handler gets fewer, newer frames, never a queue. Call it after
+// use_video, in the same scope or one inside it.
+void use_video_frames(*VideoPlayer player, VideoFrameOptions options, escaping fn(*VideoFrame)->void on_frame) {
+    static int tag;
+    *Slot slot = ui_slot(10, &tag);
+    *VideoFrameHandler held = (*VideoFrameHandler)slot.data;
+    if (held == null) {
+        held = alloc<VideoFrameHandler>(1);
+        slot.data = held;
+        slot.dispose = void() { video_release_frame_handler(held.handler); free(held); };
+    } else { video_release_frame_handler(held.handler); }
+    held.handler = on_frame;
+    held.player = player;
+    if (held.options.max_width != options.max_width || held.options.max_height != options.max_height) {
+        player.frame_width = options.max_width;
+        player.frame_height = options.max_height;
+        if (player.frame_users > 0 && player.id != 0) {
+            video_native_frames(player.id, 1, options.max_width, options.max_height);
+        }
+    }
+    held.options = options;
+    use_native_event("video_frame", void(string payload) {
+        if (held.player.id != 0 && payload != null && atoi(payload) == held.player.id) {
+            video_deliver_frame(held.player.id, held.handler);
+        }
+    });
+    use_mount(void() {
+        held.player.frame_users++;
+        held.player.frame_width = held.options.max_width;
+        held.player.frame_height = held.options.max_height;
+        if (held.player.id != 0) {
+            video_native_frames(held.player.id, 1, held.options.max_width, held.options.max_height);
+        }
+    }, void() {
+        held.player.frame_users--;
+        if (held.player.frame_users == 0 && held.player.id != 0) { video_native_frames(held.player.id, 0, 0, 0); }
+    });
+}
+
+// The fixed-point (1 << 16) coefficients that turn one matrix and range's YUV into RGB.
+struct VideoYuvCoeffs { int y_offset; int y_scale; int v_r; int u_g; int v_g; int u_b; }
+
+// The coefficients for `matrix` (a VideoMatrix), full range (Y 0-255, chroma 0-255 about
+// 128) or limited (Y 16-235, chroma 16-240).
+VideoYuvCoeffs video_yuv_coeffs(int matrix, bool full_range) {
+    double kr = 0.299;
+    double kb = 0.114;
+    if (matrix == VideoBT709) { kr = 0.2126; kb = 0.0722; }
+    double kg = 1.0 - kr - kb;
+    double ys = 1.0;
+    double cs = 1.0;
+    int offset = 0;
+    if (!full_range) { ys = 255.0 / 219.0; cs = 255.0 / 224.0; offset = 16; }
+    double one = 65536.0;
+    VideoYuvCoeffs c;
+    c.y_offset = offset;
+    c.y_scale = (int)(ys * one + 0.5);
+    c.v_r = (int)(2.0 * (1.0 - kr) * cs * one + 0.5);
+    c.u_b = (int)(2.0 * (1.0 - kb) * cs * one + 0.5);
+    c.u_g = (int)(2.0 * kb * (1.0 - kb) / kg * cs * one + 0.5);
+    c.v_g = (int)(2.0 * kr * (1.0 - kr) / kg * cs * one + 0.5);
+    return c;
+}
+
+// A fixed-point value rounded to 0-255.
+uint8 video_clamp8(int value) {
+    int v = (value + 32768) >> 16;
+    if (v < 0) { return 0; }
+    if (v > 255) { return 255; }
+    return (uint8)v;
+}
+
+// One pixel's Y, U (Cb) and V (Cr) as R, G and B into `rgb[0..2]`.
+void video_yuv_to_rgb(*VideoYuvCoeffs c, int y, int u, int v, *uint8 rgb) {
+    int yt = (y - c.y_offset) * c.y_scale;
+    int cb = u - 128;
+    int cr = v - 128;
+    rgb[0] = video_clamp8(yt + c.v_r * cr);
+    rgb[1] = video_clamp8(yt - c.u_g * cb - c.v_g * cr);
+    rgb[2] = video_clamp8(yt + c.u_b * cb);
+}
+
+// The frame's width once turned upright (to_rgba with `upright`), or as it is.
+int VideoFrame_out_width(*VideoFrame self, bool upright) {
+    if (upright && (self.rotation == 90 || self.rotation == 270)) { return self.height; }
+    return self.width;
+}
+
+// The frame's height once turned upright, or as it is.
+int VideoFrame_out_height(*VideoFrame self, bool upright) {
+    if (upright && (self.rotation == 90 || self.rotation == 270)) { return self.width; }
+    return self.height;
+}
+
+// The frame as RGBA (alpha 255) into `out`, `out_stride` bytes a row, with its own matrix
+// and range; turned by its rotation when `upright` (out_width and out_height give the size
+// `out` needs). Pure Eskiu, on the calling thread; <gpu/yuv> does the same on the GPU.
+void VideoFrame_to_rgba(*VideoFrame self, *uint8 out, int out_stride, bool upright) {
+    VideoYuvCoeffs c = video_yuv_coeffs(self.matrix, self.full_range);
+    int w = self.width;
+    int h = self.height;
+    int turn = upright ? self.rotation : 0;
+    *uint8 yp = self.planes[0].data;
+    int y_row = self.planes[0].row_stride;
+    int y_pix = self.planes[0].pixel_stride;
+    *uint8 up = null;
+    *uint8 vp = null;
+    int c_row = 0;
+    int c_pix = 0;
+    if (self.format == VideoNV12 || self.format == VideoNV21) {
+        *uint8 base = self.planes[1].data;
+        up = self.format == VideoNV12 ? base : base + 1;
+        vp = self.format == VideoNV12 ? base + 1 : base;
+        c_row = self.planes[1].row_stride;
+        c_pix = self.planes[1].pixel_stride;
+    } else if (self.format != VideoRGBA) {
+        up = self.planes[1].data;
+        vp = self.planes[2].data;
+        c_row = self.planes[1].row_stride;
+        c_pix = self.planes[1].pixel_stride;
+    }
+    int v_row = self.format == VideoI420 || self.format == VideoYUV420 ? self.planes[2].row_stride : c_row;
+    int v_pix = self.format == VideoI420 || self.format == VideoYUV420 ? self.planes[2].pixel_stride : c_pix;
+    for (y in 0..h) {
+        for (x in 0..w) {
+            int dx = x;
+            int dy = y;
+            if (turn == 90) { dx = h - 1 - y; dy = x; }
+            else if (turn == 180) { dx = w - 1 - x; dy = h - 1 - y; }
+            else if (turn == 270) { dx = y; dy = w - 1 - x; }
+            *uint8 px = out + (int64)dy * out_stride + (int64)dx * 4;
+            if (self.format == VideoRGBA) {
+                *uint8 src = yp + (int64)y * y_row + (int64)x * y_pix;
+                px[0] = src[0]; px[1] = src[1]; px[2] = src[2]; px[3] = src[3];
+                continue;
+            }
+            int luma = yp[(int64)y * y_row + (int64)x * y_pix];
+            int cu = up[(int64)(y >> 1) * c_row + (int64)(x >> 1) * c_pix];
+            int cv = vp[(int64)(y >> 1) * v_row + (int64)(x >> 1) * v_pix];
+            video_yuv_to_rgb(&c, luma, cu, cv, px);
+            px[3] = 255;
+        }
+    }
+}
