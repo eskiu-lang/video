@@ -1,0 +1,56 @@
+// The player example: a clip from the app's assets in a VideoView with play, pause, a jump
+// back and the time, and its decoded frames counted with the color at the middle of the
+// picture (converted on the CPU with VideoFrame_to_rgba).
+import <ui>;
+import <string>;
+import <video>;
+
+*Signal<int> frames;
+*Signal<int> looping;
+String middle;
+uint8[640 * 640 * 4] pixels;
+
+void Player() {
+    *VideoPlayer player = use_video("clip.mp4", VideoOptions{autoplay: true, loop: looping.get() == 1});
+    *Signal<int> clock = use_signal<int>(0);
+    use_interval(250, void() { clock.set(clock.value + 1); });
+    use_video_frames(player, VideoFrameOptions{max_width: 320, max_height: 320}, void(*VideoFrame frame) {
+        int w = frame.out_width(true);
+        int h = frame.out_height(true);
+        if (w * h <= 640 * 640) {
+            frame.to_rgba(&pixels[0], w * 4, true);
+            int at = ((h / 2) * w + w / 2) * 4;
+            String_clear(&middle);
+            String_format(&middle, "%dx%d, middle %d %d %d", w, h, pixels[at], pixels[at + 1], pixels[at + 2]);
+        }
+        frames.set(frames.value + 1);
+    });
+    Column(Style{padding: 20, gap: 12}) {
+        VideoView(Style{height: 220, radius: 12}, player, VideoContain);
+        Row(Style{gap: 12}) {
+            Button(player.status() == VideoPlaying ? "Pause" : "Play") {
+                if (player.status() == VideoPlaying) { player.pause(); } else { player.play(); }
+            }
+            Button("Back 1 s") { player.seek(player.position() - 1.0); }
+            Button(looping.get() == 1 ? "Loop: on" : "Loop: off") { looping.set(1 - looping.value); }
+        }
+        clock.get();
+        String text;
+        String_format(&text, "%.1f / %.1f s, %d frames, %s", player.position(), player.duration(), frames.get(),
+                      middle.data == null ? "no frame yet" : middle.data);
+        Text(text.data);
+        String_free(&text);
+        if (player.status() == VideoFailed) { Text(player.error()); }
+    }
+}
+
+void ui_app_start(int which) {
+    frames = signal_new<int>(0);
+    looping = signal_new<int>(1);
+    ui_mount() { Player(); }
+}
+
+void ui_app_stop() {
+    frames.free();
+    looping.free();
+}
