@@ -6,6 +6,9 @@
 package org.eskiu.video;
 
 import android.content.Context;
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.Paint;
 import android.graphics.ImageFormat;
 import android.graphics.Matrix;
 import android.graphics.Rect;
@@ -33,6 +36,12 @@ public final class EskiuVideo {
     static final HashMap<Integer, Player> players = new HashMap<>();
     static int nextId = 1;
     static final Handler main = new Handler(Looper.getMainLooper());
+    // Guards a view's surface while the video thread draws a frame into it (the main thread
+    // releases and replaces it).
+    static final Object viewLock = new Object();
+
+    // A YUV_420_888 picture to RGBA bytes (video.c registers it).
+    static native void yuvToRgba(ByteBuffer y, ByteBuffer u, ByteBuffer v, int[] layout, ByteBuffer out);
 
     public static void setup() {
         UiActivity.registerView("video", new UiActivity.ViewFactory() {
@@ -72,6 +81,14 @@ public final class EskiuVideo {
         final Object lock = new Object();
         Image latest, lent;
         boolean posted;
+        // While frames are on the MediaPlayer draws into the reader, so each frame is drawn
+        // into the VideoView from here: converted into `rgba`, copied to `picture`, drawn on
+        // the view's surface with a canvas (the view then replaces its surface before a
+        // MediaPlayer draws into it again).
+        ByteBuffer rgba;
+        Bitmap picture;
+        final int[] layout = new int[13];
+        final Paint paint = new Paint(Paint.FILTER_BITMAP_FLAG);
 
         Player(int id) { this.id = id; }
 
@@ -181,6 +198,7 @@ public final class EskiuVideo {
                 reader.setOnImageAvailableListener(this::frameReady, new Handler(thread.getLooper()));
             }
             if (!framesOn) closeReader();
+            if (!framesOn && screen != null && screen.canvasUsed) screen.renewSurface();
             try { media.setSurface(framesOn && reader != null ? reader.getSurface() : viewSurface); }
             catch (IllegalStateException error) { /* released */ }
         }
@@ -190,6 +208,7 @@ public final class EskiuVideo {
             try { image = from.acquireLatestImage(); }
             catch (IllegalStateException error) { return; }
             if (image == null) return;
+            drawIntoView(image);
             boolean post;
             synchronized (lock) {
                 if (reader != from) { image.close(); return; }
@@ -199,6 +218,60 @@ public final class EskiuVideo {
                 posted = true;
             }
             if (post) UiActivity.emit("video_frame", Integer.toString(id));
+        }
+
+        // Draws a frame into the VideoView showing this player, upright and stretched to its
+        // surface (the view's transform gives the picture its aspect ratio), on the video
+        // thread.
+        void drawIntoView(Image image) {
+            synchronized (viewLock) {
+                Surface surface = viewSurface;
+                Screen view = screen;
+                if (surface == null || view == null || !surface.isValid()) return;
+                Image.Plane[] planes = image.getPlanes();
+                if (planes.length != 3) return;
+                Rect crop = image.getCropRect();
+                int left = crop == null ? 0 : crop.left & ~1, top = crop == null ? 0 : crop.top & ~1;
+                int w = crop == null ? image.getWidth() : crop.right - left;
+                int h = crop == null ? image.getHeight() : crop.bottom - top;
+                if (w <= 0 || h <= 0) return;
+                ByteBuffer[] buffers = new ByteBuffer[3];
+                for (int p = 0; p < 3; p++) {
+                    buffers[p] = planes[p].getBuffer();
+                    int row = planes[p].getRowStride(), pixel = planes[p].getPixelStride();
+                    layout[p * 3] = buffers[p].position() + (p == 0 ? top * row + left * pixel : (top / 2) * row + (left / 2) * pixel);
+                    layout[p * 3 + 1] = row;
+                    layout[p * 3 + 2] = pixel;
+                }
+                layout[9] = w;
+                layout[10] = h;
+                layout[11] = matrix;
+                layout[12] = fullRange ? 1 : 0;
+                if (picture == null || picture.getWidth() != w || picture.getHeight() != h) {
+                    picture = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+                    rgba = ByteBuffer.allocateDirect(w * h * 4);
+                }
+                yuvToRgba(buffers[0], buffers[1], buffers[2], layout, rgba);
+                rgba.rewind();
+                picture.copyPixelsFromBuffer(rgba);
+                rgba.rewind();
+                Canvas canvas;
+                try {
+                    canvas = Build.VERSION.SDK_INT >= 23 ? surface.lockHardwareCanvas() : surface.lockCanvas(null);
+                } catch (IllegalArgumentException | IllegalStateException error) {
+                    return;
+                }
+                boolean turned = rotation == 90 || rotation == 270;
+                float uw = turned ? h : w, uh = turned ? w : h;
+                Matrix m = new Matrix();
+                m.postTranslate(-w / 2f, -h / 2f);
+                m.postRotate(rotation);
+                m.postScale(canvas.getWidth() / uw, canvas.getHeight() / uh);
+                m.postTranslate(canvas.getWidth() / 2f, canvas.getHeight() / 2f);
+                canvas.drawBitmap(picture, m, paint);
+                surface.unlockCanvasAndPost(canvas);
+                view.canvasUsed = true;
+            }
         }
 
         void closeReader() {
@@ -352,6 +425,8 @@ public final class EskiuVideo {
         Player player;
         String fit = "contain";
         Surface surface;
+        // Whether a canvas drew into `surface` (frames on), which keeps it from a MediaPlayer.
+        volatile boolean canvasUsed;
 
         Screen(Context context) {
             super(context);
@@ -361,10 +436,21 @@ public final class EskiuVideo {
         void show(int id) {
             Player next = player(id);
             if (next == player) return;
-            if (player != null) { player.viewSurface = null; player.screen = null; player.route(); }
+            if (player != null) { synchronized (viewLock) { player.viewSurface = null; } player.screen = null; player.route(); }
             player = next;
             if (player != null) { player.screen = this; player.viewSurface = surface; player.route(); }
             layoutPicture();
+        }
+
+        // A surface a canvas drew into stays connected to it: the MediaPlayer gets a new one.
+        void renewSurface() {
+            SurfaceTexture texture = getSurfaceTexture();
+            synchronized (viewLock) {
+                if (surface != null) surface.release();
+                surface = texture != null ? new Surface(texture) : null;
+                canvasUsed = false;
+                if (player != null) player.viewSurface = surface;
+            }
         }
 
         // The texture is stretched to the view; a scale about the center gives the picture
@@ -389,14 +475,17 @@ public final class EskiuVideo {
         }
         @Override public void onSurfaceTextureSizeChanged(SurfaceTexture texture, int width, int height) { layoutPicture(); }
         @Override public boolean onSurfaceTextureDestroyed(SurfaceTexture texture) {
-            if (player != null) { player.viewSurface = null; player.route(); }
-            if (surface != null) { surface.release(); surface = null; }
+            if (player != null) { synchronized (viewLock) { player.viewSurface = null; } player.route(); }
+            synchronized (viewLock) {
+                if (surface != null) { surface.release(); surface = null; }
+                canvasUsed = false;
+            }
             return true;
         }
         @Override public void onSurfaceTextureUpdated(SurfaceTexture texture) {}
 
         @Override protected void onDetachedFromWindow() {
-            if (player != null) { player.viewSurface = null; player.screen = null; player.route(); player = null; }
+            if (player != null) { synchronized (viewLock) { player.viewSurface = null; } player.screen = null; player.route(); player = null; }
             super.onDetachedFromWindow();
         }
     }
