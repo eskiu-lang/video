@@ -87,10 +87,10 @@ it shows. It is a leaf: give it a size. `fit` is `VideoContain` (the whole pictu
 where it does not fill the box), `VideoCover` (fills the box, cropping) or `VideoStretch`.
 Show a player in one `VideoView` at a time.
 
-On Android, a player sends its picture to one place: while `use_video_frames` is on for it,
-the frames get the picture and its `VideoView` stays black. Draw the frames with
-[`<gpu/yuv>`](https://github.com/eskiu-lang/gpu/blob/main/docs/yuv.md) there instead. iOS
-and the web show the view and give the frames at the same time.
+The view keeps showing the picture while `use_video_frames` is on for its player, on every
+platform. On Android the `MediaPlayer` has one output, which the frames take: each frame is
+then converted to RGB in C and drawn into the view by the package, a little more work per
+frame than the player drawing it itself.
 
 ## Sound
 

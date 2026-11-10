@@ -13,7 +13,7 @@ Guides and reference for video. The [README](../README.md) has the overview.
 | Platform | Player | `VideoView` | Frames |
 |---|---|---|---|
 | iOS | `AVPlayer` | `AVPlayerLayer` | `AVPlayerItemVideoOutput`, NV12 |
-| Android | `MediaPlayer` | `TextureView` | `YUV_420_888` `ImageReader` (the view stays black while frames are on) |
+| Android | `MediaPlayer` | `TextureView` | `YUV_420_888` `ImageReader` (while frames are on, each one is also drawn into the view) |
 | Web | `<video>` | the `<video>` element | canvas read back as RGBA |
 | macOS, Linux, Windows | the web host's `<video>` (`WKWebView`, WebKitGTK, WebView2) | the same | the same |
 

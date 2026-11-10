@@ -204,9 +204,9 @@ void VideoView(Style style, *VideoPlayer player, VideoFit fit)
 ```
 
 The player's picture, shown by the platform in the box the layout gives it (Eskiu does not
-touch the frames). One VideoView per player. On Android a player sends its picture to one
-place: while use_video_frames is on for it, the frames get the picture and the view stays
-black.
+touch the frames). One VideoView per player. It keeps showing the picture while
+use_video_frames is on for the player (on Android each frame is then converted and drawn
+into it by the package).
 
 ### VideoFormat
 

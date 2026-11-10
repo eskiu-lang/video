@@ -19,3 +19,10 @@ All notable changes to this package are documented in this file. The format is b
   `CameraFrame` and gpu's `GpuYuvImage` (NV12 on iOS, `YUV_420_888` layouts on Android, RGBA
   on the web). `VideoFrame_to_rgba`, `video_yuv_coeffs` and `video_yuv_to_rgb` convert on
   the CPU. See [docs/frames.md](docs/frames.md).
+
+### Fixed
+
+- Android: a `VideoView` stayed black while `use_video_frames` was on for its player (the
+  `MediaPlayer` has one output, and the frames took it). Each frame is now converted to RGB in
+  C and drawn into the view as well, upright, so the view and the frames work together as on
+  iOS and the web.

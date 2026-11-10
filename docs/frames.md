@@ -38,7 +38,7 @@ plane addresses; the handler reads the platform's own buffer by pointer, and
 | Platform | Source | Buffer lent to Eskiu |
 |---|---|---|
 | iOS | An `AVPlayerItemVideoOutput` on the player's item, read on each display refresh (`CADisplayLink`) when it has a new picture | The decoder's `CVPixelBuffer` (`420YpCbCr8BiPlanarVideoRange`, scaled down to the asked size by the output), base address locked read-only for the call: NV12, limited range |
-| Android | The `MediaPlayer` draws into a `YUV_420_888` `ImageReader` instead of its view | The `Image`'s planes (direct buffers, read in place, from its crop rectangle): NV12, NV21, I420 or the general three-plane layout, as the device's decoder gives it |
+| Android | The `MediaPlayer` draws into a `YUV_420_888` `ImageReader`; a `VideoView` showing the player gets each frame converted to RGB and drawn with a canvas | The `Image`'s planes (direct buffers, read in place, from its crop rectangle): NV12, NV21, I420 or the general three-plane layout, as the device's decoder gives it |
 | Web, desktop | The player's `<video>`, on each new picture (`requestVideoFrameCallback`, else each animation frame) | The picture drawn into a canvas, scaled down to the asked size, and read back as RGBA into one buffer per player in the app's memory, reused |
 
 A paused player gives no new frames. A frame that arrives while the handler runs, or while
