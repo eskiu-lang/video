@@ -3,7 +3,13 @@
 All notable changes to this package are documented in this file. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.1.1] - 2026-11-16
+## [0.1.2] - 2026-11-16
+
+### Changed
+
+- The package moved to the eskiu-packages organization; the old URL redirects. ui 0.6.1.
+
+## [0.1.1]
 
 ### Changed
 

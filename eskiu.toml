@@ -1,6 +1,6 @@
 [package]
 name = "video"
-version = "0.1.1"
+version = "0.1.2"
 
 [deps]
 ui = { git = "https://github.com/eskiu-packages/ui", rev = "v0.6.1" }
