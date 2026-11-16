@@ -71,7 +71,7 @@ struct VideoFrame {
   at most `max_width` x `max_height` (0 for no limit), keeping the aspect ratio: iOS and the
   web scale down to it; Android gives the decoded size.
 - **Layout.** `format` names it and `plane_count` planes are set; the table of layouts is
-  in ui-camera's [frames guide](https://github.com/eskiu-lang/ui-camera/blob/main/docs/frames.md#the-api).
+  in ui-camera's [frames guide](https://github.com/eskiu-packages/ui-camera/blob/main/docs/frames.md#the-api).
   Rows are often longer than the width (`row_stride`), and chroma planes are half the width
   and height, rounded up.
 - **Orientation.** A phone's portrait video is stored landscape with a rotation in its file.
@@ -90,7 +90,7 @@ struct VideoFrame {
 ## On the GPU
 
 A `*VideoFrame` cast to a `*GpuYuvImage` goes straight to
-[`<gpu/yuv>`](https://github.com/eskiu-lang/gpu/blob/main/docs/yuv.md) in the `gpu` package,
+[`<gpu/yuv>`](https://github.com/eskiu-packages/gpu/blob/main/docs/yuv.md) in the `gpu` package,
 which uploads the planes as they are (NV12 as an R8 and an RG8 texture, with the row
 stride) and converts to RGB in a shader, turned upright:
 

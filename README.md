@@ -3,17 +3,17 @@
 </p>
 
 <h2 align="center">video</h2>
-<p align="center">Video playback for apps on eskiu-lang/ui, with the decoded frames in Eskiu.</p>
+<p align="center">Video playback for apps on eskiu-packages/ui, with the decoded frames in Eskiu.</p>
 <p align="center"><sub>Part of the <a href="https://github.com/eskiu-lang">Eskiu</a> project</sub></p>
 <p align="center">
   <a href="https://eskiu-lang.org/ui.html">eskiu-lang.org/ui</a> &nbsp;&middot;&nbsp;
   <a href="#use-it">Use it</a> &nbsp;&middot;&nbsp;
   <a href="examples/player">Example</a> &nbsp;&middot;&nbsp;
-  <a href="https://github.com/eskiu-lang/ui">ui</a>
+  <a href="https://github.com/eskiu-packages/ui">ui</a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/eskiu-lang/video/actions/workflows/ci.yml"><img src="https://github.com/eskiu-lang/video/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/eskiu-packages/video/actions/workflows/ci.yml"><img src="https://github.com/eskiu-packages/video/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <img src="https://img.shields.io/badge/version-0.1.1-6448d4" alt="Version 0.1.1">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT"></a>
 </p>
@@ -24,7 +24,7 @@ An app plays a video file or stream in the platform's own player (AVPlayer on iO
 MediaPlayer on Android, an HTML `<video>` on the web and the desktop), with its sound, and
 shows it in a `VideoView`. `use_video_frames` hands the decoded pictures to Eskiu, lent by
 pointer as YUV planes (RGBA on the web) in the same layout as ui-camera's frames, so
-[`<gpu/yuv>`](https://github.com/eskiu-lang/gpu/blob/main/docs/yuv.md) draws them on the GPU
+[`<gpu/yuv>`](https://github.com/eskiu-packages/gpu/blob/main/docs/yuv.md) draws them on the GPU
 or `VideoFrame_to_rgba` converts them on the CPU.
 
 ## Add it
@@ -32,7 +32,7 @@ or `VideoFrame_to_rgba` converts them on the CPU.
 In an app made with `ui new`:
 
 ```bash
-eskiuc add video --git https://github.com/eskiu-lang/video --rev v0.1.1
+eskiuc add video --git https://github.com/eskiu-packages/video --rev v0.1.1
 ```
 
 ## Use it
