@@ -14,7 +14,7 @@
 
 <p align="center">
   <a href="https://github.com/eskiu-packages/video/actions/workflows/ci.yml"><img src="https://github.com/eskiu-packages/video/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <img src="https://img.shields.io/badge/version-0.1.2-6448d4" alt="Version 0.1.2">
+  <img src="https://img.shields.io/badge/version-0.1.3-6448d4" alt="Version 0.1.3">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT"></a>
 </p>
 
@@ -32,7 +32,7 @@ or `VideoFrame_to_rgba` converts them on the CPU.
 In an app made with `ui new`:
 
 ```bash
-eskiuc add video --git https://github.com/eskiu-packages/video --rev v0.1.2
+eskiuc add video --git https://github.com/eskiu-packages/video --rev v0.1.3
 ```
 
 ## Use it
